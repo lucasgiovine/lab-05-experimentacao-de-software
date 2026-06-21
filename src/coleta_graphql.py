@@ -4,10 +4,9 @@ import requests
 import pandas as pd
 
 # ==============================================================================
-# CONFIGURAÇÕES DA COLETA
+# CONFIGURAÇÕES DA COLETA GRAPHQL
 # ==============================================================================
-# Substitua pelo seu Personal Access Token (PAT) clássico do GitHub
-TOKEN = "SEU_PERSONAL_ACCESS_TOKEN_AQUI" 
+TOKEN = "COLOQUE_SEU_TOKEN_AQUI"
 REPOSITORIOS_ALVO = 100
 PRS_POR_REPO = 100  # Quantidade de PRs a inspecionar por repositório (máx: 100)
 DELAY_API = 0.6     # Tempo de espera para evitar o bloqueio (rate limit) do GitHub
@@ -21,10 +20,9 @@ headers = {
 # ==============================================================================
 # QUERY GRAPHQL COM PAGINAÇÃO
 # ==============================================================================
-# As três aspas (""") abrem e fecham a string de múltiplas linhas no Python
 QUERY_GRAPHQL = """
 query GetPopularRepos($cursor: String, $numPRs: Int!) {
-  search(query: "is:public sort:stars-desc", type: REPOSITORY, first: 20, after: $cursor) {
+  search(query: "is:public sort:stars-desc", type: REPOSITORY, first: 5, after: $cursor) {
     pageInfo {
       endCursor
       hasNextPage
@@ -58,23 +56,37 @@ query GetPopularRepos($cursor: String, $numPRs: Int!) {
 """
 
 # ==============================================================================
-# PIPELINE DE EXECUÇÃO E FILTRAGEM
+# PIPELINE DE EXECUÇÃO E FILTRAGEM (LAB 05)
 # ==============================================================================
-def executar_coleta():
+def executar_coleta_graphql():
     repositorios_validos_contados = 0
     cursor = None
     has_next_page = True
     
     dataset_final = []
-    repos_processados_historico = []
+    metricas_experimento = [] # Armazena dados de RQ1 (Tempo) e RQ2 (Tamanho)
 
-    print("=== INICIANDO CONSTRUÇÃO DO DATASET ===")
+    print("=== INICIANDO COLETA GRAPHQL (LAB 05) ===")
     
     while has_next_page and repositorios_validos_contados < REPOSITORIOS_ALVO:
         print(f"Buscando lote de repositórios... (Válidos até agora: {repositorios_validos_contados}/{REPOSITORIOS_ALVO})")
         
         variables = {"cursor": cursor, "numPRs": PRS_POR_REPO}
+        
+        # INÍCIO DO CRONÔMETRO E COLETA DE MÉTRICAS DA REQUISIÇÃO
+        inicio_req = time.time()
         response = requests.post(URL_GRAPHQL, json={"query": QUERY_GRAPHQL, "variables": variables}, headers=headers)
+        fim_req = time.time()
+        
+        tempo_execucao = fim_req - inicio_req
+        tamanho_bytes = len(response.content) if response.content else 0
+        
+        metricas_experimento.append({
+            "tipo_req": "graphql_query_completa", 
+            "tempo_segundos": tempo_execucao, 
+            "tamanho_bytes": tamanho_bytes
+        })
+        # FIM DA COLETA DE MÉTRICAS
         
         if response.status_code != 200:
             print(f"Erro na API do GitHub: {response.status_code}")
@@ -105,9 +117,7 @@ def executar_coleta():
                 continue
                 
             repositorios_validos_contados += 1
-            print(f"  [Processando {repositorios_validos_contados}/100] {nome_completo_repo}")
-            
-            prs_inseridos_deste_repo = 0
+            print(f"  [Processando {repositorios_validos_contados}/{REPOSITORIOS_ALVO}] {nome_completo_repo}")
             
             for pr in repo["pullRequests"]["nodes"]:
                 # Filtro 2: Pelo menos 1 revisão de código
@@ -123,8 +133,6 @@ def executar_coleta():
                     
                     # Filtro 3: Tempo de revisão maior que 1 hora
                     if duracao_revisao >= uma_hora:
-                        duracao_em_horas = duracao_revisao.total_seconds() / 3600
-                        
                         dataset_final.append({
                             "repositorio": nome_completo_repo,
                             "total_stars_repo": repo["stargazerCount"],
@@ -132,15 +140,9 @@ def executar_coleta():
                             "status_pr": pr["state"],
                             "criado_em": pr["createdAt"],
                             "concluido_em": pr["mergedAt"] if pr["mergedAt"] else pr["closedAt"],
-                            "duracao_revisao_horas": round(duracao_em_horas, 2),
+                            "duracao_revisao_horas": round(duracao_revisao.total_seconds() / 3600, 2),
                             "total_revisoes": pr["reviews"]["totalCount"]
                         })
-                        prs_inseridos_deste_repo += 1
-            
-            repos_processados_historico.append({
-                "repositorio": nome_completo_repo,
-                "prs_filtrados_inseridos": prs_inseridos_deste_repo
-            })
             
             # Pausa para evitar rate limit
             time.sleep(DELAY_API)
@@ -148,15 +150,18 @@ def executar_coleta():
     # ==============================================================================
     # EXPORTAÇÃO DOS ARQUIVOS CSV
     # ==============================================================================
-    print("\n=== COLETA CONCLUÍDA ===")
+    print("\n=== COLETA GRAPHQL CONCLUÍDA ===")
     
+    # Exporta o Dataset de Negócio (PRs)
     df_dataset = pd.DataFrame(dataset_final)
-    df_dataset.to_csv("dataset_pull_requests.csv", index=False)
-    print(f"Sucesso! Arquivo 'dataset_pull_requests.csv' gerado com {len(df_dataset)} linhas de PRs.")
+    df_dataset.to_csv("dataset_prs_graphql.csv", index=False)
     
-    df_repos = pd.DataFrame(repos_processados_historico)
-    df_repos.to_csv("relatorio_repositorios_analisados.csv", index=False)
-    print("Arquivo de auditoria 'relatorio_repositorios_analisados.csv' gerado.")
+    # Exporta o Dataset de Métricas (RQ1 e RQ2)
+    df_metricas = pd.DataFrame(metricas_experimento)
+    df_metricas.to_csv("metricas_desempenho_graphql.csv", index=False)
+    
+    print(f"Dataset PRs gerado: {len(df_dataset)} linhas.")
+    print(f"Métricas Lab 05 geradas: {len(df_metricas)} requisições monitoradas.")
 
 if __name__ == "__main__":
-    executar_coleta()
+    executar_coleta_graphql()
